@@ -115,6 +115,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 export const Logo = ({ size = 28 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden>
-    <rect width="32" height="32" rx="10" fill="#E1EFE8" /><circle cx="12.5" cy="16" r="7" fill="#4C8B7A" /><circle cx="19.5" cy="16" r="7" fill="#3C7262" fillOpacity=".55" />
+    <rect width="32" height="32" rx="10" fill="#E1EFE8" />
+    {/* book spine */}
+    <rect x="10" y="7" width="3" height="18" rx="1.5" fill="#4C8B7A" />
+    {/* book cover */}
+    <rect x="13" y="7" width="10" height="18" rx="1" fill="#3C7262" />
+    {/* page lines */}
+    <line x1="15" y1="12" x2="21" y2="12" stroke="#E1EFE8" strokeWidth="1.2" strokeLinecap="round" />
+    <line x1="15" y1="15" x2="21" y2="15" stroke="#E1EFE8" strokeWidth="1.2" strokeLinecap="round" />
+    <line x1="15" y1="18" x2="19" y2="18" stroke="#E1EFE8" strokeWidth="1.2" strokeLinecap="round" />
   </svg>
 );

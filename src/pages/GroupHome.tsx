@@ -12,12 +12,16 @@ import { suggestTransfers } from '../lib/balances';
 import { fmtDate, monthKey, monthLabel } from '../lib/format';
 
 export default function GroupHome() {
-  const { group, members, me, isOwner, expenses, settlements, balances, who, name } = useGroup();
+  const { group, members, me, expenses, settlements, balances, who, name } = useGroup();
   const toast = useToast();
   const [settleOpen, setSettleOpen] = useState(false);
-  const [invite, setInvite] = useState<string | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [shortCode, setShortCode] = useState<string | null>(null);
+  const [inviteBusy, setInviteBusy] = useState<'link' | 'code' | null>(null);
   const [inviteErr, setInviteErr] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const myNet = balances.find((b) => b.user_id === me)?.net_paise ?? 0;
   const total = expenses.reduce((a, e) => a + e.total_amount_paise, 0);
@@ -38,21 +42,39 @@ export default function GroupHome() {
     ...settlements.filter((s) => s.status === 'recorded').map((s) => ({ id: s.id, ts: s.created_at, kind: 's' as const, s })),
   ].sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, 6), [expenses, settlements]);
 
-  async function makeInvite() {
-    setInviteErr(null); setInvite('');
-    const { data, error } = await supabase.rpc('create_invitation', { p_group_id: group.id });
-    if (error) { setInvite(null); return setInviteErr(error.message); }
-    setInvite(`${window.location.origin}/join/${data}`);
+  function openInvite() {
+    setInviteLink(null); setShortCode(null); setInviteErr(null); setInviteOpen(true);
   }
-  async function copy() {
-    if (!invite) return;
-    await navigator.clipboard.writeText(invite);
-    setCopied(true); toast('Invite link copied'); setTimeout(() => setCopied(false), 2000);
+  async function makeLink() {
+    setInviteErr(null); setInviteBusy('link');
+    const { data, error } = await supabase.rpc('create_open_invitation', { p_group_id: group.id });
+    setInviteBusy(null);
+    if (error) return setInviteErr(error.message);
+    setInviteLink(`${window.location.origin}/join/${data}`);
+  }
+  async function makeCode() {
+    setInviteErr(null); setInviteBusy('code');
+    const { data, error } = await supabase.rpc('create_short_code', { p_group_id: group.id });
+    setInviteBusy(null);
+    if (error) return setInviteErr(error.message);
+    setShortCode(data as string);
+  }
+  async function copyLink() {
+    if (!inviteLink) return;
+    await navigator.clipboard.writeText(inviteLink);
+    setCopiedLink(true); toast('Link copied'); setTimeout(() => setCopiedLink(false), 2000);
+  }
+  async function copyCode() {
+    if (!shortCode) return;
+    await navigator.clipboard.writeText(shortCode);
+    setCopiedCode(true); toast('Code copied'); setTimeout(() => setCopiedCode(false), 2000);
   }
 
-  const hero = myNet > 0 ? { bg: 'bg-sage-100', fg: 'text-sage-700', big: `You’re owed ${formatINR(myNet)}` }
-    : myNet < 0 ? { bg: 'bg-owe-soft', fg: 'text-owe-deep', big: `You owe ${formatINR(-myNet)}` }
-    : { bg: 'bg-sage-100', fg: 'text-sage-700', big: expenses.length ? 'You’re all settled' : 'Nothing spent yet' };
+  const hero = myNet > 0
+    ? { bg: 'bg-sage-100', fg: 'text-sage-700', big: `You're owed ${formatINR(myNet)}` }
+    : myNet < 0
+    ? { bg: 'bg-owe-soft', fg: 'text-owe-deep', big: `You owe ${formatINR(-myNet)}` }
+    : { bg: 'bg-sage-100', fg: 'text-sage-700', big: expenses.length ? "You're all settled" : 'Nothing spent yet' };
 
   return (
     <div className="space-y-6">
@@ -74,7 +96,7 @@ export default function GroupHome() {
 
       <div className="grid gap-6 md:grid-cols-5">
         <section className="card p-6 md:col-span-3">
-          <h2 className="mb-5 text-lg font-bold">Who’s ahead</h2>
+          <h2 className="mb-5 text-lg font-bold">Who's ahead</h2>
           <BalanceBars balances={balances} who={who} name={name} />
           <Link to="balances" className="mt-5 inline-flex items-center gap-1 text-sm font-semibold text-sage-600 hover:underline">Details and repayments <ArrowRight className="h-4 w-4" /></Link>
         </section>
@@ -125,22 +147,66 @@ export default function GroupHome() {
         </section>
       </div>
 
-      {isOwner && (
-        <section className="card flex flex-wrap items-center justify-between gap-3 p-5">
-          <div><p className="font-semibold">{members.length === 1 ? 'You’re the only one here' : 'Add someone'}</p><p className="text-sm text-ink-soft">Invite links work once and expire in 3 days.</p></div>
-          <Btn variant="soft" onClick={makeInvite}><UserPlus className="h-5 w-5" />Create invite link</Btn>
-        </section>
-      )}
-      {inviteErr && <ErrorNote>{inviteErr}</ErrorNote>}
-      <Modal open={invite !== null} onClose={() => setInvite(null)} title="Invite link">
-        {invite ? (
-          <>
-            <p className="mb-3 text-ink-soft">Send this to one person. It works once and expires in 3 days.</p>
-            <input readOnly className="input num text-sm" value={invite} onFocus={(e) => e.currentTarget.select()} aria-label="Invite link" />
-            <Btn className="mt-4 w-full" onClick={copy}>{copied ? <><Check className="h-4 w-4" />Copied</> : <><Copy className="h-4 w-4" />Copy link</>}</Btn>
-          </>
-        ) : <p className="text-ink-soft">Creating a secure link…</p>}
+      {/* Invite section — visible to all members */}
+      <section className="card flex flex-wrap items-center justify-between gap-3 p-5">
+        <div>
+          <p className="font-semibold">{members.length === 1 ? "You're the only one here" : 'Add someone'}</p>
+          <p className="text-sm text-ink-soft">Share a link or a 6-digit code — anyone with it can join.</p>
+        </div>
+        <Btn variant="soft" onClick={openInvite}><UserPlus className="h-5 w-5" />Invite people</Btn>
+      </section>
+
+      {/* Invite modal */}
+      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Invite to group">
+        <div className="space-y-4">
+
+          {/* Link */}
+          <div className="rounded-2xl border border-line p-4">
+            <p className="font-semibold">Share a link</p>
+            <p className="mt-0.5 text-sm text-ink-soft">Anyone with this link can join. Valid for 7 days.</p>
+            {inviteLink ? (
+              <>
+                <input readOnly className="input num mt-3 text-sm" value={inviteLink}
+                  onFocus={(e) => e.currentTarget.select()} aria-label="Invite link" />
+                <Btn className="mt-2 w-full" onClick={copyLink}>
+                  {copiedLink ? <><Check className="h-4 w-4" />Copied</> : <><Copy className="h-4 w-4" />Copy link</>}
+                </Btn>
+              </>
+            ) : (
+              <Btn variant="soft" className="mt-3 w-full" loading={inviteBusy === 'link'} onClick={makeLink}>
+                Generate link
+              </Btn>
+            )}
+          </div>
+
+          {/* Code */}
+          <div className="rounded-2xl border border-line p-4">
+            <p className="font-semibold">Share a 6-digit code</p>
+            <p className="mt-0.5 text-sm text-ink-soft">Read it out or type it in chat. Valid for 7 days.</p>
+            {shortCode ? (
+              <>
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  {shortCode.split('').map((d, i) => (
+                    <span key={i} className="num flex h-12 w-10 items-center justify-center rounded-xl border border-sage-200 bg-sage-50 text-2xl font-extrabold text-sage-700">
+                      {d}
+                    </span>
+                  ))}
+                </div>
+                <Btn className="mt-3 w-full" onClick={copyCode}>
+                  {copiedCode ? <><Check className="h-4 w-4" />Copied</> : <><Copy className="h-4 w-4" />Copy code</>}
+                </Btn>
+              </>
+            ) : (
+              <Btn variant="soft" className="mt-3 w-full" loading={inviteBusy === 'code'} onClick={makeCode}>
+                Generate code
+              </Btn>
+            )}
+          </div>
+
+          {inviteErr && <ErrorNote>{inviteErr}</ErrorNote>}
+        </div>
       </Modal>
+
       <SettleDialog open={settleOpen} onClose={() => setSettleOpen(false)} />
     </div>
   );

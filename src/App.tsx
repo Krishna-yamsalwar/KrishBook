@@ -35,6 +35,7 @@ export default function App() {
             <Route element={<AppShell />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/groups/new" element={<NewGroup />} />
+              <Route path="/join" element={<Join />} />
               <Route path="/join/:token" element={<Join />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/groups/:groupId" element={<GroupLayout />}>

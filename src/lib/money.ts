@@ -46,6 +46,7 @@ export type SplitOutcome = { ok: true; splits: SplitResult[] } | { ok: false; er
  * Split `total` paise between people. Mirrors public._compute_splits in the database
  * (largest remainder; ties go to the lowest member id), so the preview always matches
  * what the server saves. The server recomputes everything and never trusts this result.
+ * Zero weights/percentages are allowed — those members receive share 0.
  */
 export function computeSplits(total: number, method: SplitMethod, inputs: SplitInput[]): SplitOutcome {
   if (!Number.isInteger(total) || total <= 0) return { ok: false, error: 'Enter an amount above zero' };
@@ -55,7 +56,7 @@ export function computeSplits(total: number, method: SplitMethod, inputs: SplitI
     const shares: number[] = [];
     for (const i of inputs) {
       const p = parseINR(i.value);
-      if (p === null || p <= 0) return { ok: false, error: 'Enter an amount above zero for everyone selected' };
+      if (p === null || p < 0) return { ok: false, error: 'Enter a valid amount for everyone selected' };
       shares.push(p);
     }
     const sum = shares.reduce((a, b) => a + b, 0);
@@ -66,38 +67,47 @@ export function computeSplits(total: number, method: SplitMethod, inputs: SplitI
     return { ok: true, splits: inputs.map((i, k) => ({ memberId: i.memberId, share: shares[k] })) };
   }
 
-  let ws: bigint[];
   if (method === 'equal') {
-    ws = inputs.map(() => 1n);
-  } else {
-    const parsed = inputs.map((i) => parseScaled(i.value));
-    if (parsed.some((w) => w === null || w <= 0n)) {
-      return { ok: false, error: method === 'percentage'
-        ? 'Every selected person needs a percentage above zero'
-        : 'Every selected person needs a weight above zero. Untick anyone who didn’t take part.' };
-    }
-    ws = parsed as bigint[];
-    if (method === 'percentage') {
-      const sum = ws.reduce((a, b) => a + b, 0n);
-      if (sum !== 10000n) return { ok: false, error: `Percentages add up to ${Number(sum) / 100}% — they need to total exactly 100%` };
-    }
+    const T = BigInt(total);
+    const S = BigInt(inputs.length);
+    const rows = inputs.map((i) => { const fl = T / S; return { id: i.memberId, fl, frac: T - fl * S }; });
+    // recompute properly with per-row numerator
+    const rows2 = inputs.map((i) => { const num = T * 1n; return { id: i.memberId, fl: num / S, frac: num % S }; });
+    const left = T - rows2.reduce((a, r) => a + r.fl, 0n);
+    const order = [...rows2].sort((x, y) => (x.frac === y.frac ? (x.id < y.id ? -1 : 1) : x.frac > y.frac ? -1 : 1));
+    const extra = new Set(order.slice(0, Number(left)).map((r) => r.id));
+    return { ok: true, splits: rows2.map((r) => ({ memberId: r.id, share: Number(r.fl) + (extra.has(r.id) ? 1 : 0) })) };
   }
 
+  // percentage / weighted — zero is allowed; zero-weight members get share 0
+  const parsed = inputs.map((i) => parseScaled(i.value));
+  if (parsed.some((w) => w === null || w < 0n)) {
+    return { ok: false, error: 'Enter a valid value for everyone (0 is allowed)' };
+  }
+  const ws = parsed as bigint[];
+
+  if (method === 'percentage') {
+    const sum = ws.reduce((a, b) => a + b, 0n);
+    if (sum !== 10000n) return { ok: false, error: `Percentages add up to ${Number(sum) / 100}% — they need to total exactly 100%` };
+  }
+
+  const active = inputs.filter((_, k) => ws[k] > 0n);
+  const activeWs = ws.filter((w) => w > 0n);
+  if (active.length === 0) return { ok: false, error: 'At least one person needs a value above zero' };
+
   const T = BigInt(total);
-  const S = ws.reduce((a, b) => a + b, 0n);
-  const rows = inputs.map((i, k) => {
-    const num = T * ws[k];
-    return { id: i.memberId, fl: num / S, frac: num % S };
-  });
+  const S = activeWs.reduce((a, b) => a + b, 0n);
+  const rows = active.map((i, k) => { const num = T * activeWs[k]; return { id: i.memberId, fl: num / S, frac: num % S }; });
   const left = T - rows.reduce((a, r) => a + r.fl, 0n);
   const order = [...rows].sort((x, y) => (x.frac === y.frac ? (x.id < y.id ? -1 : 1) : x.frac > y.frac ? -1 : 1));
   const extra = new Set(order.slice(0, Number(left)).map((r) => r.id));
+  const shareMap = new Map(rows.map((r) => [r.id, Number(r.fl) + (extra.has(r.id) ? 1 : 0)]));
 
   return {
     ok: true,
-    splits: rows.map((r, k) => ({
-      memberId: r.id,
-      share: Number(r.fl) + (extra.has(r.id) ? 1 : 0),
+    splits: inputs.map((i, k) => ({
+      memberId: i.memberId,
+      share: shareMap.get(i.memberId) ?? 0,
       ...(method === 'percentage' ? { percentage: Number(ws[k]) / 100 } : {}),
       ...(method === 'weighted' ? { weight: Number(ws[k]) / 100 } : {}),
     })),

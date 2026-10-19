@@ -8,12 +8,13 @@ import type { Expense, SplitMethod } from '../lib/types';
 
 const METHODS: SplitMethod[] = ['equal', 'percentage', 'manual', 'weighted'];
 const SHORT: Record<SplitMethod, string> = { equal: 'Equal', percentage: 'Percent', manual: 'Amounts', weighted: 'Weights' };
-const UNIT: Record<SplitMethod, string> = { equal: '', percentage: '%', manual: '₹', weighted: '×' };
 
 function initialValues(e?: Expense): Record<string, string> {
   if (!e) return {};
   return Object.fromEntries(e.expense_splits.map((s) => [s.member_id,
-    e.split_method === 'percentage' ? String(s.percentage ?? '') : e.split_method === 'weighted' ? String(s.weight ?? '') : e.split_method === 'manual' ? paiseToInput(s.share_amount_paise) : '']));
+    e.split_method === 'percentage' ? String(s.percentage ?? '') :
+    e.split_method === 'weighted' ? String(s.weight ?? '') :
+    e.split_method === 'manual' ? paiseToInput(s.share_amount_paise) : '']));
 }
 
 export default function ExpenseForm({ existing, onDone, onCancel }: { existing?: Expense; onDone: (id: string) => void; onCancel?: () => void }) {
@@ -25,24 +26,37 @@ export default function ExpenseForm({ existing, onDone, onCancel }: { existing?:
   const [category, setCategory] = useState(existing?.category ?? '');
   const [payer, setPayer] = useState(existing?.payer_id ?? me);
   const [method, setMethod] = useState<SplitMethod>(existing?.split_method ?? 'equal');
-  const [picked, setPicked] = useState<string[]>(existing ? existing.expense_splits.map((s) => s.member_id) : members.map((m) => m.user_id));
+  const [picked, setPicked] = useState<string[]>(
+    existing ? existing.expense_splits.map((s) => s.member_id) : members.map((m) => m.user_id)
+  );
   const [vals, setVals] = useState<Record<string, string>>(initialValues(existing));
   const [busy, setBusy] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const requestId = useRef(crypto.randomUUID()); // makes double-submits harmless on the server
+  const requestId = useRef(crypto.randomUUID());
   const lock = useRef(false);
 
   const paise = parseINR(amount);
-  const ordered = members.filter((m) => picked.includes(m.user_id)); // keep member order stable
-  const preview = useMemo(() => (paise && paise > 0
-    ? computeSplits(paise, method, ordered.map((m) => ({ memberId: m.user_id, value: vals[m.user_id] ?? '' })))
-    : null), [paise, method, ordered, vals]);
-  const shareOf = (id: string) => (preview?.ok ? preview.splits.find((s) => s.memberId === id)?.share : undefined);
+  const ordered = members.filter((m) => picked.includes(m.user_id));
+
+  const preview = useMemo(() => {
+    if (!paise || paise <= 0) return null;
+    return computeSplits(paise, method, ordered.map((m) => ({ memberId: m.user_id, value: vals[m.user_id] ?? '' })));
+  }, [paise, method, ordered, vals]);
+
+  const shareOf = (id: string) => preview?.ok ? preview.splits.find((s) => s.memberId === id)?.share : undefined;
   const showSplitErr = preview && !preview.ok && (attempted || (method !== 'equal' && Object.values(vals).some((v) => v !== '')));
 
-  function fill(m: SplitMethod, ids: string[], p: number | null) {
-    if (m === 'percentage') { const e = evenPercents(ids.length); return Object.fromEntries(ids.map((id, i) => [id, e[i]])); }
+  // running total for manual mode
+  const manualSum = method === 'manual'
+    ? ordered.reduce((acc, m) => acc + (parseINR(vals[m.user_id] ?? '') ?? 0), 0)
+    : null;
+
+  function fill(m: SplitMethod, ids: string[], p: number | null): Record<string, string> {
+    if (m === 'percentage') {
+      const e = evenPercents(ids.length);
+      return Object.fromEntries(ids.map((id, i) => [id, e[i]]));
+    }
     if (m === 'weighted') return Object.fromEntries(ids.map((id) => [id, '1']));
     if (m === 'manual' && p) {
       const r = computeSplits(p, 'equal', ids.map((id) => ({ memberId: id, value: '' })));
@@ -50,11 +64,23 @@ export default function ExpenseForm({ existing, onDone, onCancel }: { existing?:
     }
     return {};
   }
-  function pickMethod(m: SplitMethod) { setMethod(m); setVals(fill(m, ordered.map((x) => x.user_id), paise)); }
+
+  function pickMethod(m: SplitMethod) {
+    setMethod(m);
+    setVals(fill(m, ordered.map((x) => x.user_id), paise));
+  }
+
   function toggle(id: string) {
-    const next = picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id];
+    const isOn = picked.includes(id);
+    const next = isOn ? picked.filter((x) => x !== id) : [...picked, id];
     setPicked(next);
-    if (method === 'weighted' && !picked.includes(id)) setVals((v) => ({ ...v, [id]: v[id] || '1' }));
+    if (!isOn) {
+      // adding: give sensible default
+      if (method === 'weighted') setVals((v) => ({ ...v, [id]: '1' }));
+      if (method === 'percentage') setVals((v) => ({ ...v, [id]: '0' }));
+      if (method === 'manual') setVals((v) => ({ ...v, [id]: '0' }));
+    }
+    // for equal: no vals needed, preview auto-recalculates
   }
 
   async function submit(e: FormEvent) {
@@ -62,7 +88,7 @@ export default function ExpenseForm({ existing, onDone, onCancel }: { existing?:
     setAttempted(true); setErr(null);
     if (lock.current) return;
     if (!paise || paise <= 0) return setErr('Enter the total amount, like 450 or 1250.50');
-    if (!desc.trim()) return setErr('Add a short description, like “Dinner”');
+    if (!desc.trim()) return setErr('Add a short description, like "Dinner"');
     if (!preview || !preview.ok) return setErr(preview?.error ?? 'Check the split');
     lock.current = true; setBusy(true);
     const inputs = ordered.map((m) => ({
@@ -85,18 +111,24 @@ export default function ExpenseForm({ existing, onDone, onCancel }: { existing?:
 
   return (
     <form onSubmit={submit} className="space-y-6">
+      {/* Amount */}
       <div className="card p-6">
         <label className="block">
           <span className="text-sm font-medium">How much?</span>
           <div className="mt-1 flex items-baseline gap-2 border-b-2 border-line pb-2 focus-within:border-sage-500">
             <span className="text-4xl font-extrabold text-ink-soft">₹</span>
-            <input className="num w-full bg-transparent text-5xl font-extrabold tracking-tight outline-none placeholder:text-ink/15" inputMode="decimal" placeholder="0" autoFocus={!existing}
+            <input className="num w-full bg-transparent text-5xl font-extrabold tracking-tight outline-none placeholder:text-ink/15"
+              inputMode="decimal" placeholder="0" autoFocus={!existing}
               value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Total amount in rupees" />
           </div>
         </label>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <Field label="What was it for?"><input className="input" maxLength={120} placeholder="Dinner, groceries, auto fare…" value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
-          <Field label="Date"><input type="date" className="input" value={date} max={todayISO()} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="What was it for?">
+            <input className="input" maxLength={120} placeholder="Dinner, groceries, auto fare…" value={desc} onChange={(e) => setDesc(e.target.value)} />
+          </Field>
+          <Field label="Date">
+            <input type="date" className="input" value={date} max={todayISO()} onChange={(e) => setDate(e.target.value)} />
+          </Field>
           <Field label="Paid by">
             <select className="input" value={payer} onChange={(e) => setPayer(e.target.value)}>
               {members.map((m) => <option key={m.user_id} value={m.user_id}>{m.user_id === me ? 'You' : m.name}</option>)}
@@ -111,48 +143,127 @@ export default function ExpenseForm({ existing, onDone, onCancel }: { existing?:
         </div>
       </div>
 
+      {/* Split */}
       <div className="card p-6">
+        {/* Header */}
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-lg font-bold">Split between</h2>
-          <span className="text-sm text-ink-soft">{picked.length} of {members.length} selected</span>
+          <span className="text-sm text-ink-soft">{picked.length} of {members.length}</span>
         </div>
-        <div className="mb-4 grid grid-cols-4 gap-1 rounded-full bg-black/5 p-1" role="tablist" aria-label="Split method">
+
+        {/* Method tabs */}
+        <div className="mb-5 grid grid-cols-4 gap-1 rounded-full bg-black/5 p-1" role="tablist" aria-label="Split method">
           {METHODS.map((m) => (
             <button key={m} type="button" role="tab" aria-selected={method === m} title={METHOD_LABEL[m]} onClick={() => pickMethod(m)}
-              className={`rounded-full py-2 text-sm font-semibold transition ${method === m ? 'bg-paper shadow-sm' : 'text-ink-soft'}`}>{SHORT[m]}</button>
+              className={`rounded-full py-2 text-sm font-semibold transition ${method === m ? 'bg-paper shadow-sm' : 'text-ink-soft'}`}>
+              {SHORT[m]}
+            </button>
           ))}
         </div>
+
+        {/* Member rows */}
         <ul className="space-y-2">
           {members.map((m) => {
             const on = picked.includes(m.user_id);
             const share = shareOf(m.user_id);
+            const isMe = m.user_id === me;
+
             return (
-              <li key={m.user_id} className={`flex items-center gap-3 rounded-2xl border px-3 py-2.5 transition ${on ? 'border-sage-500 bg-sage-50' : 'border-line bg-white'}`}>
-                <button type="button" role="checkbox" aria-checked={on} onClick={() => toggle(m.user_id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                  <Avatar id={m.user_id} name={m.name} size={34} />
-                  <span className={`truncate font-medium ${on ? '' : 'text-ink-soft'}`}>{m.user_id === me ? `${m.name} (you)` : m.name}</span>
-                </button>
-                {on && method !== 'equal' && (
-                  <span className="flex items-center gap-1">
-                    {method === 'manual' && <span className="text-ink-soft">₹</span>}
-                    <input className="input num !w-20 !px-3 !py-2 text-right" inputMode="decimal" aria-label={`${m.name} ${METHOD_LABEL[method]}`}
-                      value={vals[m.user_id] ?? ''} onChange={(e) => setVals((v) => ({ ...v, [m.user_id]: e.target.value }))} />
-                    {method !== 'manual' && <span className="w-3 text-ink-soft">{UNIT[method]}</span>}
+              <li key={m.user_id}
+                className={`rounded-2xl border transition ${on ? 'border-sage-500 bg-sage-50' : 'border-line bg-white opacity-60'}`}>
+                {/* Top row: checkbox + name + share badge */}
+                <div className="flex items-center gap-3 px-3 py-2.5">
+                  {/* Checkbox */}
+                  <button type="button" role="checkbox" aria-checked={on} onClick={() => toggle(m.user_id)}
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition
+                      ${on ? 'border-sage-500 bg-sage-500' : 'border-line bg-white'}`}>
+                    {on && (
+                      <svg className="h-3 w-3 text-white" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </button>
+
+                  <Avatar id={m.user_id} name={m.name} size={32} />
+
+                  <span className={`flex-1 truncate font-medium ${on ? '' : 'text-ink-soft'}`}>
+                    {isMe ? `${m.name} (you)` : m.name}
                   </span>
+
+                  {/* Live share amount */}
+                  {on && (
+                    <span className={`num text-sm font-bold tabular-nums ${share !== undefined && share > 0 ? 'text-sage-700' : 'text-ink-soft'}`}>
+                      {share !== undefined ? formatINR(share) : '—'}
+                    </span>
+                  )}
+                </div>
+
+                {/* Input row for non-equal methods */}
+                {on && method !== 'equal' && (
+                  <div className="flex items-center gap-2 border-t border-line/40 px-3 py-2">
+                    <span className="text-xs text-ink-soft w-16">
+                      {method === 'percentage' ? 'Percent' : method === 'manual' ? 'Amount' : 'Weight'}
+                    </span>
+                    <div className="flex flex-1 items-center gap-1">
+                      {method === 'manual' && <span className="text-ink-soft text-sm">₹</span>}
+                      <input
+                        className="input num flex-1 !py-1.5 text-right"
+                        inputMode="decimal"
+                        aria-label={`${m.name} ${METHOD_LABEL[method]}`}
+                        value={vals[m.user_id] ?? ''}
+                        onChange={(e) => setVals((v) => ({ ...v, [m.user_id]: e.target.value }))}
+                      />
+                      {method === 'percentage' && <span className="text-ink-soft text-sm">%</span>}
+                      {method === 'weighted' && <span className="text-ink-soft text-sm">×</span>}
+                    </div>
+                  </div>
                 )}
-                {on && <span className="num w-20 text-right text-sm font-semibold text-ink-soft">{share !== undefined ? formatINR(share) : '—'}</span>}
               </li>
             );
           })}
         </ul>
-        <div className="mt-3 flex items-center justify-between gap-3">
-          {method === 'equal' ? <span /> : (
-            <button type="button" className="text-sm font-semibold text-sage-600 hover:underline"
-              onClick={() => setVals(fill(method, ordered.map((x) => x.user_id), paise))}>{method === 'weighted' ? 'Reset weights to 1' : 'Fill evenly'}</button>
+
+        {/* Footer: totals / reset */}
+        <div className="mt-4 flex items-center justify-between gap-3 text-sm">
+          {method === 'equal' ? (
+            paise && paise > 0 && picked.length > 0 ? (
+              <span className="text-ink-soft">
+                ₹{(paise / picked.length / 100).toFixed(2)} each
+                {paise % picked.length !== 0 ? ' (adjusted for paise)' : ''}
+              </span>
+            ) : <span />
+          ) : (
+            <button type="button" className="font-semibold text-sage-600 hover:underline"
+              onClick={() => setVals(fill(method, ordered.map((x) => x.user_id), paise))}>
+              {method === 'weighted' ? 'Reset to equal weights' : method === 'percentage' ? 'Distribute evenly' : 'Fill evenly'}
+            </button>
           )}
-          {preview?.ok && <span className="text-sm text-ink-soft">Shares add up to {formatINR(paise!)}</span>}
+
+          {/* Running total for manual */}
+          {method === 'manual' && paise && paise > 0 && (
+            <span className={`num font-semibold tabular-nums ${manualSum === paise ? 'text-sage-600' : 'text-owe-deep'}`}>
+              {formatINR(manualSum ?? 0)} / {formatINR(paise)}
+            </span>
+          )}
+
+          {/* Percent total */}
+          {method === 'percentage' && (
+            <span className={`num font-semibold tabular-nums ${
+              ordered.reduce((a, m) => a + (parseFloat(vals[m.user_id] ?? '0') || 0), 0) === 100
+                ? 'text-sage-600' : 'text-owe-deep'
+            }`}>
+              {ordered.reduce((a, m) => a + (parseFloat(vals[m.user_id] ?? '0') || 0), 0).toFixed(2)}%
+            </span>
+          )}
+
+          {preview?.ok && method !== 'manual' && method !== 'percentage' && (
+            <span className="text-ink-soft">= {formatINR(paise!)}</span>
+          )}
         </div>
-        {showSplitErr && preview && !preview.ok && <div className="mt-3"><ErrorNote>{preview.error}</ErrorNote></div>}
+
+        {showSplitErr && preview && !preview.ok && (
+          <div className="mt-3"><ErrorNote>{preview.error}</ErrorNote></div>
+        )}
       </div>
 
       {err && <ErrorNote>{err}</ErrorNote>}

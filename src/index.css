@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-tap-highlight-color: transparent; }
+  body { @apply bg-mist text-ink font-sans antialiased; }
+  :focus-visible { outline: 2px solid #4C8B7A; outline-offset: 2px; }
+  select.input { @apply appearance-none pr-10; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235C6E68' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; }
+}
+
+@layer components {
+  .card { @apply bg-paper border border-line rounded-3xl; }
+  .input { @apply w-full rounded-2xl border border-line bg-white px-4 py-3 text-base outline-none transition placeholder:text-ink-soft/60 focus:border-sage-500 focus:ring-2 focus:ring-sage-500/20; }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 font-semibold transition active:scale-[.98] disabled:pointer-events-none disabled:opacity-50; }
+  .btn-primary { @apply bg-sage-600 text-white hover:bg-sage-700; }
+  .btn-soft { @apply bg-sage-100 text-sage-700 hover:bg-sage-200; }
+  .btn-ghost { @apply text-ink-soft hover:bg-black/5; }
+  .btn-danger { @apply bg-owe-soft text-owe-deep hover:bg-[#f2d6da]; }
+  .num { font-variant-numeric: tabular-nums; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}

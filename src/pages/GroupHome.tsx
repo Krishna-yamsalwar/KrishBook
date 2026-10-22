@@ -8,7 +8,7 @@ import BalanceBars from '../components/BalanceBars';
 import SettleDialog from '../components/SettleDialog';
 import { Btn, ErrorNote, Modal, useToast } from '../components/ui';
 import { formatINR } from '../lib/money';
-import { suggestTransfers } from '../lib/balances';
+import { pairwiseBalances } from '../lib/balances';
 import { fmtDate, monthKey, monthLabel } from '../lib/format';
 
 export default function GroupHome() {
@@ -23,11 +23,21 @@ export default function GroupHome() {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  const myNet = balances.find((b) => b.user_id === me)?.net_paise ?? 0;
   const total = expenses.reduce((a, e) => a + e.total_amount_paise, 0);
   const myPaid = expenses.filter((e) => e.payer_id === me).reduce((a, e) => a + e.total_amount_paise, 0);
   const myShare = expenses.flatMap((e) => e.expense_splits).filter((s) => s.member_id === me).reduce((a, s) => a + s.share_amount_paise, 0);
-  const myTransfers = useMemo(() => suggestTransfers(Object.fromEntries(balances.map((b) => [b.user_id, b.net_paise]))).filter((t) => t.from === me || t.to === me), [balances, me]);
+  // Per-person: what each individual owes me or I owe them directly
+  const myPairwise = useMemo(() => {
+    const pw = pairwiseBalances(expenses, settlements);
+    const myRow = pw.get(me);
+    if (!myRow) return [];
+    return [...myRow.entries()]
+      .filter(([, v]) => Math.abs(v) >= 1)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  }, [expenses, settlements, me]);
+
+  const totalOwedToMe = myPairwise.filter(([, v]) => v > 0).reduce((a, [, v]) => a + v, 0);
+  const totalIOwe = myPairwise.filter(([, v]) => v < 0).reduce((a, [, v]) => a + (-v), 0);
 
   const months = useMemo(() => {
     const now = new Date();
@@ -70,21 +80,25 @@ export default function GroupHome() {
     setCopiedCode(true); toast('Code copied'); setTimeout(() => setCopiedCode(false), 2000);
   }
 
-  const hero = myNet > 0
-    ? { bg: 'bg-sage-100', fg: 'text-sage-700', big: `You're owed ${formatINR(myNet)}` }
-    : myNet < 0
-    ? { bg: 'bg-owe-soft', fg: 'text-owe-deep', big: `You owe ${formatINR(-myNet)}` }
-    : { bg: 'bg-sage-100', fg: 'text-sage-700', big: expenses.length ? "You're all settled" : 'Nothing spent yet' };
+  const hero = totalIOwe === 0 && totalOwedToMe === 0
+    ? { bg: 'bg-sage-100', fg: 'text-sage-700', big: expenses.length ? "You're all settled" : 'Nothing spent yet' }
+    : totalIOwe === 0
+    ? { bg: 'bg-sage-100', fg: 'text-sage-700', big: `You're owed ${formatINR(totalOwedToMe)}` }
+    : totalOwedToMe === 0
+    ? { bg: 'bg-owe-soft', fg: 'text-owe-deep', big: `You owe ${formatINR(totalIOwe)}` }
+    : { bg: 'bg-owe-soft', fg: 'text-owe-deep', big: `You owe ${formatINR(totalIOwe)} · owed ${formatINR(totalOwedToMe)}` };
 
   return (
     <div className="space-y-6">
       <section className={`rounded-3xl ${hero.bg} p-6 md:p-8`}>
         <p className={`num text-4xl font-extrabold tracking-tight md:text-5xl ${hero.fg}`}>{hero.big}</p>
         <div className={`mt-2 space-y-0.5 ${hero.fg}`}>
-          {myTransfers.length === 0 && <p className="opacity-80">{expenses.length ? 'Nothing to chase right now.' : 'Add the first expense and the tally starts itself.'}</p>}
-          {myTransfers.map((t) => (
-            <p key={t.from + t.to} className="flex items-center gap-1.5 opacity-90">
-              {t.from === me ? <>You pay {name(t.to)}</> : <>{name(t.from)} pays you</>} <ArrowRight className="h-3.5 w-3.5" /> <span className="num font-semibold">{formatINR(t.amount)}</span>
+          {myPairwise.length === 0 && <p className="opacity-80">{expenses.length ? 'Nothing to chase right now.' : 'Add the first expense and the tally starts itself.'}</p>}
+          {myPairwise.map(([personId, amount]) => (
+            <p key={personId} className="flex items-center gap-1.5 opacity-90">
+              {amount > 0
+                ? <>{name(personId)} owes you <span className="num font-semibold">{formatINR(amount)}</span></>
+                : <>You owe {name(personId)} <span className="num font-semibold">{formatINR(-amount)}</span></>}
             </p>
           ))}
         </div>

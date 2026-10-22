@@ -24,6 +24,39 @@ export function computeNets(memberIds: string[], expenses: ExpenseLike[], settle
   return net;
 }
 
+/**
+ * Pairwise balance between every pair of members, derived directly from
+ * expense splits and settlements — NOT from the collapsed net.
+ * pairwise[A][B] > 0 means B owes A that amount.
+ */
+export function pairwiseBalances(
+  expenses: ExpenseLike[],
+  settlements: SettlementLike[]
+): Map<string, Map<string, number>> {
+  const pw = new Map<string, Map<string, number>>();
+  const add = (a: string, b: string, amount: number) => {
+    if (!pw.has(a)) pw.set(a, new Map());
+    if (!pw.has(b)) pw.set(b, new Map());
+    const cur = pw.get(a)!.get(b) ?? 0;
+    pw.get(a)!.set(b, cur + amount);
+    pw.get(b)!.set(a, -(cur + amount));
+  };
+  for (const e of expenses) {
+    if (e.deleted_at) continue;
+    for (const s of e.expense_splits) {
+      if (s.member_id === e.payer_id) continue;
+      // payer is owed share_amount by member
+      add(e.payer_id, s.member_id, s.share_amount_paise);
+    }
+  }
+  for (const s of settlements) {
+    if (s.status !== 'recorded') continue;
+    // payer paid receiver — reduces what payer owes receiver
+    add(s.receiver_id, s.payer_id, -s.amount_paise);
+  }
+  return pw;
+}
+
 /** Greedy matching of the biggest debtor with the biggest creditor: at most (people − 1) transfers. */
 export function suggestTransfers(nets: Map<string, number> | Record<string, number>): Transfer[] {
   const entries = nets instanceof Map ? [...nets.entries()] : Object.entries(nets);

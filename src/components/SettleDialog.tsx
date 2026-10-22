@@ -1,15 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useGroup } from './GroupLayout';
 import { Btn, ErrorNote, Field, Modal, useToast } from './ui';
 import { formatINR, paiseToInput, parseINR } from '../lib/money';
+import { pairwiseBalances } from '../lib/balances';
 import type { Settlement } from '../lib/types';
 import { todayISO } from '../lib/format';
 
 export interface SettleDefaults { from?: string; to?: string; amount?: number }
 
 export default function SettleDialog({ open, onClose, defaults, existing }: { open: boolean; onClose: () => void; defaults?: SettleDefaults; existing?: Settlement }) {
-  const { group, members, me, balances, name, reload } = useGroup();
+  const { group, members, me, expenses, settlements, name, reload } = useGroup();
   const toast = useToast();
   const others = members.filter((m) => m.user_id !== me);
   const [from, setFrom] = useState(me);
@@ -36,10 +37,14 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // When editing, add this repayment's own effect back so the limit shown is what's really allowed.
-  const net = (id: string) => (balances.find((b) => b.user_id === id)?.net_paise ?? 0)
-    - (existing ? (id === existing.payer_id ? existing.amount_paise : 0) - (id === existing.receiver_id ? existing.amount_paise : 0) : 0);
-  const maxOwed = Math.max(0, Math.min(-net(from), net(to)));
+  // Direct pairwise debt between the two selected people.
+  // pairwise[from][to] > 0 means `from` owes `to` that amount directly.
+  const maxOwed = useMemo(() => {
+    const pw = pairwiseBalances(expenses, settlements.filter((s) => existing ? s.id !== existing.id : true));
+    const direct = pw.get(from)?.get(to) ?? 0;
+    // direct < 0 means `from` is owed by `to`, so no debt in this direction
+    return Math.max(0, -direct);
+  }, [expenses, settlements, from, to, existing]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

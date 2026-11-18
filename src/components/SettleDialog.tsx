@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useGroup } from './GroupLayout';
 import { Btn, ErrorNote, Field, Modal, useToast } from './ui';
 import { formatINR, paiseToInput, parseINR } from '../lib/money';
-import { computeNets, maxSettlementAmount, pairwiseBalances } from '../lib/balances';
+import { pairwiseBalances } from '../lib/balances';
 import type { Settlement } from '../lib/types';
 import { todayISO } from '../lib/format';
 
@@ -35,19 +35,13 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     let defaultAmount = defaults?.amount;
 
     if (!defaults?.to && f === me) {
-      const nets = computeNets(members.map((member) => member.user_id), expenses, settlements);
       const pw = pairwiseBalances(expenses, settlements);
       const debts = [...(pw.get(me)?.entries() ?? [])]
         .filter(([, debt]) => debt < 0)
-        .map(([personId, debt]) => ({
-          personId,
-          amount: Math.min(-debt, maxSettlementAmount(nets, me, personId)),
-        }))
-        .filter((debt) => debt.amount > 0)
-        .sort((a, b) => b.amount - a.amount);
+        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
       if (debts.length > 0) {
-        t = debts[0].personId;
-        defaultAmount = debts[0].amount;
+        t = debts[0][0];
+        defaultAmount = -debts[0][1];
       }
     }
     if (!t) t = (f === me ? others[0]?.user_id : me) ?? '';
@@ -61,12 +55,10 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     () => settlements.filter((s) => existing ? s.id !== existing.id : true),
     [settlements, existing],
   );
-  const nets = useMemo(
-    () => computeNets(members.map((member) => member.user_id), expenses, settlementsWithoutExisting),
-    [members, expenses, settlementsWithoutExisting],
-  );
-
-  const maxOwed = maxSettlementAmount(nets, from, to);
+  const maxOwed = useMemo(() => {
+    const pw = pairwiseBalances(expenses, settlementsWithoutExisting);
+    return Math.max(0, -(pw.get(from)?.get(to) ?? 0));
+  }, [expenses, settlementsWithoutExisting, from, to]);
 
   const individualDebts = useMemo(() => {
     if (existing) return [];
@@ -74,13 +66,9 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     const selectedFrom = from === me ? me : from;
     return [...(pw.get(selectedFrom)?.entries() ?? [])]
       .filter(([, debt]) => debt < 0)
-      .map(([personId, debt]) => ({
-        personId,
-        amount: Math.min(-debt, maxSettlementAmount(nets, selectedFrom, personId)),
-      }))
-      .filter((debt) => debt.amount > 0)
+      .map(([personId, debt]) => ({ personId, amount: -debt }))
       .sort((a, b) => b.amount - a.amount);
-  }, [expenses, settlementsWithoutExisting, existing, from, me, nets]);
+  }, [expenses, settlementsWithoutExisting, existing, from, me]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

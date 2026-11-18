@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeSplits, parseINR, formatINR, evenPercents, rupeesStr } from './money';
-import { computeNets, maxSettlementAmount, pairwiseBalances, suggestTransfers } from './balances';
+import { computeNets, pairwiseBalances, suggestTransfers } from './balances';
 import { toCSV } from './csv';
 
 const ids = (n: number) => Array.from({ length: n }, (_, i) => ({ memberId: String.fromCharCode(97 + i), value: '' }));
@@ -99,15 +99,14 @@ describe('balances', () => {
     const n = computeNets(['k', 'f'], expenses, []);
     expect([...n.values()].reduce((a, b) => a + b, 0)).toBe(0);
   });
-  it('caps a direct debt by the payer net when their pairwise debt is larger', () => {
+  it('keeps individual debts separate from each member’s overall net', () => {
     const expenses = [
       { payer_id: 'krishna', total_amount_paise: 41900, expense_splits: [{ member_id: 'anmol', share_amount_paise: 41900 }] },
       { payer_id: 'anmol', total_amount_paise: 16590, expense_splits: [{ member_id: 'disha', share_amount_paise: 16590 }] },
     ];
     const nets = computeNets(['anmol', 'krishna', 'disha'], expenses, []);
     expect(pairwiseBalances(expenses, []).get('anmol')?.get('krishna')).toBe(-41900);
-    expect(maxSettlementAmount(nets, 'anmol', 'krishna')).toBe(25310);
-    expect(maxSettlementAmount(nets, 'krishna', 'anmol')).toBe(0);
+    expect(nets.get('anmol')).toBe(-25310);
   });
   it('suggests at most n−1 transfers and clears everyone', () => {
     const nets = new Map([['a', 7000], ['b', -3000], ['c', -2000], ['d', -2000]]);

@@ -5,7 +5,7 @@ import { ArrowRight, Check, Copy, HandCoins, Plus, UserPlus } from 'lucide-react
 import { supabase } from '../lib/supabase';
 import { useGroup } from '../components/GroupLayout';
 import BalanceBars from '../components/BalanceBars';
-import SettleDialog from '../components/SettleDialog';
+import SettleDialog, { SettleDefaults } from '../components/SettleDialog';
 import { Btn, ErrorNote, Modal, useToast } from '../components/ui';
 import { formatINR } from '../lib/money';
 import { pairwiseBalances } from '../lib/balances';
@@ -14,7 +14,7 @@ import { fmtDate, monthKey, monthLabel } from '../lib/format';
 export default function GroupHome() {
   const { group, members, me, expenses, settlements, balances, who, name } = useGroup();
   const toast = useToast();
-  const [settleOpen, setSettleOpen] = useState(false);
+  const [settleDefaults, setSettleDefaults] = useState<SettleDefaults | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [shortCode, setShortCode] = useState<string | null>(null);
@@ -104,7 +104,7 @@ export default function GroupHome() {
         </div>
         <div className="mt-6 flex flex-wrap gap-3">
           <Link to="expenses/new" className="btn btn-primary"><Plus className="h-5 w-5" />Add expense</Link>
-          <Btn variant="soft" className="!bg-white/70 hover:!bg-white" onClick={() => setSettleOpen(true)}><HandCoins className="h-5 w-5" />Settle up</Btn>
+          <Btn variant="soft" className="!bg-white/70 hover:!bg-white" onClick={() => setSettleDefaults({})}><HandCoins className="h-5 w-5" />Settle up</Btn>
         </div>
       </section>
 
@@ -221,7 +221,7 @@ export default function GroupHome() {
         </div>
       </Modal>
 
-      <SettleDialog open={settleOpen} onClose={() => setSettleOpen(false)} />
+      <SettleDialog open={settleDefaults !== null} onClose={() => setSettleDefaults(null)} defaults={settleDefaults ?? undefined} />
     </div>
   );
 }

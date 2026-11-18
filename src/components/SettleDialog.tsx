@@ -31,8 +31,22 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
       return;
     }
     const f = defaults?.from ?? me;
-    const t = defaults?.to ?? (f === me ? others[0]?.user_id : me) ?? '';
-    setFrom(f); setTo(t); setAmount(defaults?.amount ? paiseToInput(defaults.amount) : ''); setNote(''); setDate(todayISO()); setErr(null);
+    let t = defaults?.to ?? '';
+    let defaultAmount = defaults?.amount;
+
+    if (!defaults?.to && f === me) {
+      const pw = pairwiseBalances(expenses, settlements);
+      const debts = [...(pw.get(me)?.entries() ?? [])]
+        .filter(([, debt]) => debt < 0)
+        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+      if (debts.length > 0) {
+        t = debts[0][0];
+        defaultAmount = -debts[0][1];
+      }
+    }
+    if (!t) t = (f === me ? others[0]?.user_id : me) ?? '';
+
+    setFrom(f); setTo(t); setAmount(defaultAmount ? paiseToInput(defaultAmount) : ''); setNote(''); setDate(todayISO()); setErr(null);
     requestId.current = crypto.randomUUID();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -42,9 +56,18 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
   const maxOwed = useMemo(() => {
     const pw = pairwiseBalances(expenses, settlements.filter((s) => existing ? s.id !== existing.id : true));
     const direct = pw.get(from)?.get(to) ?? 0;
-    // direct < 0 means `from` is owed by `to`, so no debt in this direction
     return Math.max(0, -direct);
   }, [expenses, settlements, from, to, existing]);
+
+  const individualDebts = useMemo(() => {
+    if (existing) return [];
+    const pw = pairwiseBalances(expenses, settlements);
+    const selectedFrom = from === me ? me : from;
+    return [...(pw.get(selectedFrom)?.entries() ?? [])]
+      .filter(([, debt]) => debt < 0)
+      .map(([personId, debt]) => ({ personId, amount: -debt }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [expenses, settlements, existing, from, me]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,6 +75,9 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     const paise = parseINR(amount);
     if (!paise || paise <= 0) return setErr('Enter an amount above zero, like 500 or 250.50');
     if (from === to) return setErr('Choose two different people');
+    if (!existing && maxOwed > 0 && paise > maxOwed) {
+      return setErr(`${name(from)} owes ${name(to)} only ${formatINR(maxOwed)}.`);
+    }
     setBusy(true); setErr(null);
     const { error } = existing
       ? await supabase.rpc('update_settlement', {
@@ -87,6 +113,28 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
               </select>
             </Field>
           </div>
+          {!existing && individualDebts.length > 0 && (
+            <div className="rounded-2xl border border-line p-3">
+              <p className="mb-2 text-sm font-semibold text-ink-soft">
+                {from === me ? 'You owe' : `${name(from)} owes`}
+              </p>
+              <div className="space-y-2">
+                {individualDebts.map((debt) => (
+                  <button
+                    key={debt.personId}
+                    type="button"
+                    className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition ${
+                      to === debt.personId ? 'bg-sage-100 text-sage-700' : 'bg-sage-50 hover:bg-sage-100'
+                    }`}
+                    onClick={() => { setTo(debt.personId); setAmount(paiseToInput(debt.amount)); setErr(null); }}
+                  >
+                    <span>{name(debt.personId)}</span>
+                    <span className="num font-bold">{formatINR(debt.amount)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <Field label="Amount" hint={maxOwed > 0 ? `${name(from) === name(me) ? 'You owe' : `${name(from)} owes`} up to ${formatINR(maxOwed)} to ${name(to)}.` : undefined}>
             <input className="input num" inputMode="decimal" placeholder="₹0" value={amount} onChange={(e) => setAmount(e.target.value)} autoFocus />
           </Field>

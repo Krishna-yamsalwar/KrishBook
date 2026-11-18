@@ -24,6 +24,11 @@ export function computeNets(memberIds: string[], expenses: ExpenseLike[], settle
   return net;
 }
 
+/** Maximum repayment allowed by both the payer's debt and receiver's credit. */
+export function maxSettlementAmount(nets: Map<string, number>, from: string, to: string): number {
+  return Math.max(0, Math.min(-(nets.get(from) ?? 0), nets.get(to) ?? 0));
+}
+
 /**
  * Pairwise balance between every pair of members, derived directly from
  * expense splits and settlements — NOT from the collapsed net.

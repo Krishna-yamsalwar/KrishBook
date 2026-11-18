@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useGroup } from './GroupLayout';
 import { Btn, ErrorNote, Field, Modal, useToast } from './ui';
 import { formatINR, paiseToInput, parseINR } from '../lib/money';
-import { pairwiseBalances } from '../lib/balances';
+import { computeNets, maxSettlementAmount, pairwiseBalances } from '../lib/balances';
 import type { Settlement } from '../lib/types';
 import { todayISO } from '../lib/format';
 
@@ -35,13 +35,19 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     let defaultAmount = defaults?.amount;
 
     if (!defaults?.to && f === me) {
+      const nets = computeNets(members.map((member) => member.user_id), expenses, settlements);
       const pw = pairwiseBalances(expenses, settlements);
       const debts = [...(pw.get(me)?.entries() ?? [])]
         .filter(([, debt]) => debt < 0)
-        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+        .map(([personId, debt]) => ({
+          personId,
+          amount: Math.min(-debt, maxSettlementAmount(nets, me, personId)),
+        }))
+        .filter((debt) => debt.amount > 0)
+        .sort((a, b) => b.amount - a.amount);
       if (debts.length > 0) {
-        t = debts[0][0];
-        defaultAmount = -debts[0][1];
+        t = debts[0].personId;
+        defaultAmount = debts[0].amount;
       }
     }
     if (!t) t = (f === me ? others[0]?.user_id : me) ?? '';
@@ -51,23 +57,30 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Direct pairwise debt between the two selected people.
-  // pairwise[from][to] > 0 means `from` owes `to` that amount directly.
-  const maxOwed = useMemo(() => {
-    const pw = pairwiseBalances(expenses, settlements.filter((s) => existing ? s.id !== existing.id : true));
-    const direct = pw.get(from)?.get(to) ?? 0;
-    return Math.max(0, -direct);
-  }, [expenses, settlements, from, to, existing]);
+  const settlementsWithoutExisting = useMemo(
+    () => settlements.filter((s) => existing ? s.id !== existing.id : true),
+    [settlements, existing],
+  );
+  const nets = useMemo(
+    () => computeNets(members.map((member) => member.user_id), expenses, settlementsWithoutExisting),
+    [members, expenses, settlementsWithoutExisting],
+  );
+
+  const maxOwed = maxSettlementAmount(nets, from, to);
 
   const individualDebts = useMemo(() => {
     if (existing) return [];
-    const pw = pairwiseBalances(expenses, settlements);
+    const pw = pairwiseBalances(expenses, settlementsWithoutExisting);
     const selectedFrom = from === me ? me : from;
     return [...(pw.get(selectedFrom)?.entries() ?? [])]
       .filter(([, debt]) => debt < 0)
-      .map(([personId, debt]) => ({ personId, amount: -debt }))
+      .map(([personId, debt]) => ({
+        personId,
+        amount: Math.min(-debt, maxSettlementAmount(nets, selectedFrom, personId)),
+      }))
+      .filter((debt) => debt.amount > 0)
       .sort((a, b) => b.amount - a.amount);
-  }, [expenses, settlements, existing, from, me]);
+  }, [expenses, settlementsWithoutExisting, existing, from, me, nets]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -75,8 +88,8 @@ export default function SettleDialog({ open, onClose, defaults, existing }: { op
     const paise = parseINR(amount);
     if (!paise || paise <= 0) return setErr('Enter an amount above zero, like 500 or 250.50');
     if (from === to) return setErr('Choose two different people');
-    if (!existing && maxOwed > 0 && paise > maxOwed) {
-      return setErr(`${name(from)} owes ${name(to)} only ${formatINR(maxOwed)}.`);
+    if (!existing && paise > maxOwed) {
+      return setErr(`The maximum repayment from ${name(from)} to ${name(to)} is ${formatINR(maxOwed)}.`);
     }
     setBusy(true); setErr(null);
     const { error } = existing
